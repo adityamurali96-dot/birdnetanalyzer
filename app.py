@@ -1,4 +1,7 @@
 import os
+import re
+import csv
+import io
 import sqlite3
 import json
 from datetime import datetime, timedelta
@@ -38,8 +41,23 @@ def init_db():
             created_at TEXT DEFAULT (datetime('now'))
         )
     """)
+    existing_cols = {row["name"] for row in conn.execute("PRAGMA table_info(detections)")}
+    for col, ddl in (
+        ("scientific_name", "ALTER TABLE detections ADD COLUMN scientific_name TEXT"),
+        ("start_offset", "ALTER TABLE detections ADD COLUMN start_offset REAL"),
+        ("end_offset", "ALTER TABLE detections ADD COLUMN end_offset REAL"),
+    ):
+        if col not in existing_cols:
+            conn.execute(ddl)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON detections(timestamp)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_species ON detections(species)")
+    # Dedup key for CSV uploads: same run-time + species + start offset = same detection.
+    # Pre-existing rows have NULL scientific_name/start_offset and SQLite treats NULLs as
+    # distinct in unique indexes, so this won't conflict with the legacy /api/detect data.
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup "
+        "ON detections(timestamp, scientific_name, start_offset)"
+    )
     conn.commit()
     conn.close()
 
@@ -88,6 +106,111 @@ def add_detection():
     conn.close()
     cleanup_old_records()
     return jsonify({"status": "ok", "inserted": count}), 201
+
+
+_RUN_TS_RE = re.compile(r"run_(\d{8})_(\d{6})")
+
+
+def _parse_run_timestamp(path):
+    """Extract a UTC datetime from a 'run_YYYYMMDD_HHMMSS' segment, or None."""
+    if not path:
+        return None
+    m = _RUN_TS_RE.search(path)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+@app.route("/api/upload", methods=["POST"])
+def upload_csv():
+    """Pi pushes a BirdNET-Analyzer CSV (rtype=csv / CombinedTable) here."""
+    if request.headers.get("X-API-Key", "") != API_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"error": "Missing 'file' form field"}), 400
+
+    raw = f.read()
+    if not raw:
+        return jsonify({"error": "Empty file"}), 400
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return jsonify({"error": "File is not UTF-8 text"}), 400
+
+    # Base timestamp: prefer the run_YYYYMMDD_HHMMSS folder from the upload's path,
+    # falling back to an explicit form field, then to upload time.
+    candidate_paths = [f.filename or "", request.form.get("source_path", "")]
+    base_dt = next((dt for dt in (_parse_run_timestamp(p) for p in candidate_paths) if dt), None)
+    if base_dt is None:
+        base_dt = datetime.utcnow()
+
+    try:
+        try:
+            dialect = csv.Sniffer().sniff(text[:4096], delimiters=",\t;")
+        except csv.Error:
+            dialect = csv.excel
+        reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+        fields = reader.fieldnames or []
+    except csv.Error as e:
+        return jsonify({"error": f"Malformed CSV: {e}"}), 400
+
+    header_map = {h.strip().lower(): h for h in fields}
+    required = ["start (s)", "end (s)", "scientific name", "common name", "confidence"]
+    missing = [r for r in required if r not in header_map]
+    if missing:
+        return jsonify({"error": f"Missing CSV columns: {missing}"}), 400
+
+    col_start = header_map["start (s)"]
+    col_end = header_map["end (s)"]
+    col_sci = header_map["scientific name"]
+    col_com = header_map["common name"]
+    col_conf = header_map["confidence"]
+
+    rows = []
+    try:
+        for line_no, row in enumerate(reader, start=2):
+            if row is None:
+                continue
+            try:
+                start = float(row[col_start])
+                end = float(row[col_end])
+                conf = float(row[col_conf])
+            except (TypeError, ValueError, KeyError) as e:
+                return jsonify({"error": f"Malformed row at line {line_no}: {e}"}), 400
+            sci = (row.get(col_sci) or "").strip()
+            com = (row.get(col_com) or "").strip() or sci
+            if not com:
+                continue
+            ts = (base_dt + timedelta(seconds=start)).isoformat()
+            rows.append((com, sci, conf, ts, start, end, f.filename))
+    except csv.Error as e:
+        return jsonify({"error": f"Malformed CSV: {e}"}), 400
+
+    inserted = 0
+    duplicates = 0
+    conn = get_db()
+    try:
+        for r in rows:
+            try:
+                conn.execute(
+                    "INSERT INTO detections "
+                    "(species, scientific_name, confidence, timestamp, start_offset, end_offset, audio_file) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    r,
+                )
+                inserted += 1
+            except sqlite3.IntegrityError:
+                duplicates += 1
+        conn.commit()
+    finally:
+        conn.close()
+    cleanup_old_records()
+    return jsonify({"inserted": inserted, "duplicates": duplicates}), 200
 
 
 @app.route("/api/detections")
