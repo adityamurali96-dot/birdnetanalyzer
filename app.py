@@ -218,11 +218,17 @@ def upload_csv():
 def get_detections():
     hours = request.args.get("hours", 24, type=int)
     species = request.args.get("species", None)
-    limit = request.args.get("limit", 200, type=int)
-    cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+    day = request.args.get("day", None)
+    limit = request.args.get("limit", 500, type=int)
     conn = get_db()
-    query = "SELECT * FROM detections WHERE timestamp > ?"
-    params = [cutoff]
+    params = []
+    if day:
+        query = "SELECT * FROM detections WHERE DATE(timestamp) = ?"
+        params.append(day)
+    else:
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        query = "SELECT * FROM detections WHERE timestamp > ?"
+        params.append(cutoff)
     if species:
         query += " AND species = ?"
         params.append(species)
@@ -231,6 +237,32 @@ def get_detections():
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
+
+
+@app.route("/api/day_summary")
+def get_day_summary():
+    day = request.args.get("day")
+    if not day:
+        return jsonify({"error": "day param required (YYYY-MM-DD)"}), 400
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT species,
+                  MAX(scientific_name) as scientific_name,
+                  COUNT(*) as count,
+                  ROUND(AVG(confidence), 2) as avg_confidence,
+                  MAX(timestamp) as last_seen
+           FROM detections WHERE DATE(timestamp) = ?
+           GROUP BY species ORDER BY count DESC""",
+        (day,),
+    ).fetchall()
+    total = sum(r["count"] for r in rows)
+    conn.close()
+    return jsonify({
+        "day": day,
+        "total_detections": total,
+        "unique_species": len(rows),
+        "species": [dict(r) for r in rows],
+    })
 
 
 @app.route("/api/stats")
@@ -940,6 +972,120 @@ DASHBOARD_HTML = r"""
   }
   footer .stamps { display: flex; gap: 24px; }
 
+  /* day modal */
+  .day-modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(8, 16, 12, 0.78);
+    backdrop-filter: blur(6px);
+    display: none;
+    align-items: flex-start; justify-content: center;
+    z-index: 100;
+    padding: 60px 20px;
+    overflow-y: auto;
+  }
+  .day-modal-bg.show { display: flex; }
+  .day-modal {
+    background: var(--forest);
+    border: 1px solid rgba(168,212,182,0.18);
+    border-radius: 6px;
+    width: 100%; max-width: 720px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+    animation: modalIn 0.2s ease-out;
+  }
+  @keyframes modalIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .day-modal-head {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 22px 26px 18px;
+    border-bottom: 1px solid rgba(168,212,182,0.12);
+  }
+  .day-modal-head h3 {
+    font-family: 'Spectral', serif;
+    font-size: 22px; font-weight: 500;
+    color: var(--bone);
+    margin: 0 0 4px;
+  }
+  .day-modal-head .day-sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--sage);
+  }
+  .day-modal-close {
+    background: transparent; border: 1px solid rgba(168,212,182,0.2);
+    color: var(--bone-dim);
+    width: 30px; height: 30px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px; line-height: 1;
+    transition: all 0.15s;
+  }
+  .day-modal-close:hover { color: var(--bone); border-color: var(--mint); }
+  .day-modal-stats {
+    display: flex; gap: 28px;
+    padding: 16px 26px;
+    border-bottom: 1px solid rgba(168,212,182,0.08);
+  }
+  .day-modal-stats .stat-block { display: flex; flex-direction: column; gap: 2px; }
+  .day-modal-stats .n {
+    font-family: 'Spectral', serif;
+    font-size: 26px; color: var(--bone);
+  }
+  .day-modal-stats .l {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 9px; letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--sage);
+  }
+  .day-modal-list {
+    max-height: 50vh; overflow-y: auto;
+    padding: 8px 0;
+  }
+  .day-modal-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 26px;
+    border-bottom: 1px solid rgba(168,212,182,0.05);
+  }
+  .day-modal-row:last-child { border-bottom: none; }
+  .day-modal-row .thumb {
+    width: 44px; height: 44px;
+    border-radius: 4px;
+    background: rgba(168,212,182,0.08);
+    display: flex; align-items: center; justify-content: center;
+    color: var(--sage);
+    overflow: hidden; flex-shrink: 0;
+  }
+  .day-modal-row .thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .day-modal-row .info { flex: 1; min-width: 0; }
+  .day-modal-row .info .name {
+    font-family: 'Spectral', serif;
+    font-size: 15px; color: var(--bone);
+  }
+  .day-modal-row .info .latin {
+    font-style: italic; font-size: 11px;
+    color: var(--bone-dim);
+  }
+  .day-modal-row .meta {
+    text-align: right;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    color: var(--bone-dim);
+  }
+  .day-modal-row .meta .count {
+    color: var(--mint);
+    font-size: 14px;
+  }
+  .day-modal-empty {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--bone-dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+  #dailyChart { cursor: pointer; }
+
   /* generation overlay */
   .gen-shimmer {
     position: absolute; inset: 0;
@@ -1108,6 +1254,30 @@ DASHBOARD_HTML = r"""
     <div id="empty-msg" class="empty" style="display:none;">Awaiting transmissions from the station…</div>
   </section>
 
+  <!-- ─── day detail modal ─── -->
+  <div class="day-modal-bg" id="day-modal-bg" role="dialog" aria-modal="true" aria-labelledby="day-modal-title">
+    <div class="day-modal">
+      <div class="day-modal-head">
+        <div>
+          <h3 id="day-modal-title">—</h3>
+          <div class="day-sub" id="day-modal-sub">Detections for selected day</div>
+        </div>
+        <button class="day-modal-close" id="day-modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="day-modal-stats">
+        <div class="stat-block">
+          <div class="n" id="day-modal-total">0</div>
+          <div class="l">Detections</div>
+        </div>
+        <div class="stat-block">
+          <div class="n" id="day-modal-species-n">0</div>
+          <div class="l">Species</div>
+        </div>
+      </div>
+      <div class="day-modal-list" id="day-modal-list"></div>
+    </div>
+  </div>
+
   <footer>
     <div>BirdNET · v2.0 · Field Edition</div>
     <div class="stamps">
@@ -1248,6 +1418,7 @@ DASHBOARD_HTML = r"""
       const dt = new Date(d.day);
       return dt.toLocaleDateString([], { weekday: 'short' });
     });
+    const days = dc.map(d => d.day);
     const data = dc.map(d => d.count);
     const ctx = document.getElementById('dailyChart');
     if (dailyChart) dailyChart.destroy();
@@ -1259,7 +1430,19 @@ DASHBOARD_HTML = r"""
       }]},
       options: {
         responsive: true, maintainAspectRatio: false,
-        plugins: { legend: { display: false } },
+        onClick: (evt, elements) => {
+          if (!elements || !elements.length) return;
+          const idx = elements[0].index;
+          const day = days[idx];
+          if (day) openDayModal(day);
+        },
+        onHover: (evt, elements) => {
+          evt.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+        },
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { afterLabel: () => 'Click to view birds' } },
+        },
         scales: {
           y: { beginAtZero: true, ticks: { color: '#7fa68a', font: { family: 'JetBrains Mono', size: 10 } }, grid: { color: 'rgba(243,238,217,0.05)' }, border: { display: false } },
           x: { ticks: { color: '#7fa68a', font: { family: 'JetBrains Mono', size: 11 } }, grid: { display: false }, border: { display: false } },
@@ -1267,6 +1450,73 @@ DASHBOARD_HTML = r"""
       },
     });
   }
+
+  async function openDayModal(day) {
+    const bg = document.getElementById('day-modal-bg');
+    const title = document.getElementById('day-modal-title');
+    const sub = document.getElementById('day-modal-sub');
+    const totalEl = document.getElementById('day-modal-total');
+    const spEl = document.getElementById('day-modal-species-n');
+    const list = document.getElementById('day-modal-list');
+
+    const dt = new Date(day + 'T00:00:00');
+    title.textContent = dt.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric', year: 'numeric' });
+    sub.textContent = 'Detections · ' + day;
+    list.innerHTML = '<div class="day-modal-empty">Loading…</div>';
+    totalEl.textContent = '—';
+    spEl.textContent = '—';
+    bg.classList.add('show');
+
+    let summary;
+    try {
+      summary = await fetch('/api/day_summary?day=' + encodeURIComponent(day)).then(r => r.json());
+    } catch (e) {
+      list.innerHTML = '<div class="day-modal-empty">Failed to load.</div>';
+      return;
+    }
+
+    totalEl.textContent = (summary.total_detections || 0).toLocaleString();
+    spEl.textContent = summary.unique_species || 0;
+
+    const species = summary.species || [];
+    if (!species.length) {
+      list.innerHTML = '<div class="day-modal-empty">No detections recorded for this day.</div>';
+      return;
+    }
+
+    list.innerHTML = species.map(s => `
+      <div class="day-modal-row" data-species="${s.species}">
+        <div class="thumb"><div class="ph">◉</div></div>
+        <div class="info">
+          <div class="name">${s.species}</div>
+          ${s.scientific_name ? `<div class="latin">${s.scientific_name}</div>` : ''}
+        </div>
+        <div class="meta">
+          <div class="count">${s.count}</div>
+          <div>${(s.avg_confidence*100).toFixed(0)}% avg</div>
+        </div>
+      </div>
+    `).join('');
+
+    for (const s of species) {
+      const url = await getBirdImage(s.species, s.scientific_name);
+      if (url) {
+        const cell = list.querySelector(`[data-species="${CSS.escape(s.species)}"] .thumb`);
+        if (cell) cell.innerHTML = `<img src="${url}" alt="${s.species}">`;
+      }
+    }
+  }
+
+  function closeDayModal() {
+    document.getElementById('day-modal-bg').classList.remove('show');
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const bg = document.getElementById('day-modal-bg');
+    const closeBtn = document.getElementById('day-modal-close');
+    if (closeBtn) closeBtn.addEventListener('click', closeDayModal);
+    if (bg) bg.addEventListener('click', e => { if (e.target === bg) closeDayModal(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDayModal(); });
+  });
 
   function renderDonut(top) {
     const ctx = document.getElementById('speciesChart');
