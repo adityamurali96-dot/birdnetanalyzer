@@ -18,6 +18,28 @@ API_KEY = os.environ.get("BIRDNET_API_KEY", "changeme-secret-key")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 OPENAI_IMAGE_MODEL = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1")
 DB_PATH = os.environ.get("DB_PATH", "birdnet.db")
+# Optional retention window. If unset (or <= 0), detections are kept forever.
+try:
+    RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "0"))
+except ValueError:
+    RETENTION_DAYS = 0
+
+
+def _warn_if_ephemeral_db():
+    """Loudly warn at startup if DB_PATH looks like it lives on an ephemeral
+    filesystem (Railway redeploys wipe everything outside a mounted Volume)."""
+    persistent_prefixes = ("/data", "/mnt", "/var/lib", "/persist")
+    abs_path = os.path.abspath(DB_PATH)
+    is_default = "DB_PATH" not in os.environ
+    looks_persistent = any(abs_path.startswith(p) for p in persistent_prefixes)
+    if is_default or not looks_persistent:
+        print(
+            "WARNING: DB_PATH=%r resolves to %r which does not look persistent. "
+            "On Railway, mount a Volume (e.g. /data) and set DB_PATH=/data/birdnet.db, "
+            "otherwise detections and cached bird images are lost on every redeploy."
+            % (DB_PATH, abs_path),
+            flush=True,
+        )
 
 
 def get_db():
@@ -75,8 +97,13 @@ def init_db():
 
 
 def cleanup_old_records():
+    """No-op unless RETENTION_DAYS is set to a positive value. Previously this
+    silently deleted everything older than 7 days on every CSV upload, which
+    caused permanent loss of historical detections."""
+    if RETENTION_DAYS <= 0:
+        return
     conn = get_db()
-    cutoff = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    cutoff = (datetime.utcnow() - timedelta(days=RETENTION_DAYS)).isoformat()
     conn.execute("DELETE FROM detections WHERE timestamp < ?", (cutoff,))
     conn.commit()
     conn.close()
@@ -1676,6 +1703,7 @@ DASHBOARD_HTML = r"""
 
 """
 
+_warn_if_ephemeral_db()
 init_db()
 
 if __name__ == "__main__":
