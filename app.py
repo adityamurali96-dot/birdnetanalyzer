@@ -491,6 +491,478 @@ def dashboard():
     return render_template_string(DASHBOARD_HTML)
 
 
+@app.route("/upload")
+def upload_page():
+    return render_template_string(UPLOAD_HTML)
+
+
+UPLOAD_HTML = r"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BirdNET — Upload CSV</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --forest: #0f1a14;
+    --forest-2: #142119;
+    --moss: #4f7a5f;
+    --mint: #a8d4b6;
+    --sage: #7fa68a;
+    --bone: #f3eed9;
+    --bone-dim: #d8d2bd;
+    --amber: #d8a85c;
+    --crimson: #b15454;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--forest);
+    color: var(--bone);
+    font-family: 'Inter', sans-serif;
+    min-height: 100vh;
+    padding: 40px 20px;
+    background-image:
+      radial-gradient(circle at 20% 0%, rgba(168,212,182,0.04), transparent 50%),
+      radial-gradient(circle at 80% 100%, rgba(79,122,95,0.06), transparent 50%);
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  .topbar {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 32px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid rgba(168,212,182,0.12);
+  }
+  .topbar h1 {
+    font-family: 'Fraunces', serif;
+    font-size: 22px; font-weight: 500;
+    color: var(--bone);
+  }
+  .topbar h1 em { font-style: italic; color: var(--mint); }
+  .topbar a {
+    color: var(--sage);
+    text-decoration: none;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+    border: 1px solid rgba(168,212,182,0.18);
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .topbar a:hover { color: var(--bone); border-color: var(--mint); }
+  h2 {
+    font-family: 'Fraunces', serif;
+    font-size: 32px; font-weight: 500;
+    margin-bottom: 8px;
+  }
+  .sub {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--sage);
+    margin-bottom: 28px;
+  }
+  .panel {
+    background: var(--forest-2);
+    border: 1px solid rgba(168,212,182,0.12);
+    border-radius: 6px;
+    padding: 24px;
+    margin-bottom: 20px;
+  }
+  label {
+    display: block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--sage);
+    margin-bottom: 8px;
+  }
+  input[type=password], input[type=text] {
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--forest);
+    border: 1px solid rgba(168,212,182,0.18);
+    border-radius: 4px;
+    color: var(--bone);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input:focus { border-color: var(--mint); }
+  .dropzone {
+    margin-top: 18px;
+    padding: 40px 20px;
+    border: 2px dashed rgba(168,212,182,0.25);
+    border-radius: 6px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.15s;
+    background: rgba(15,26,20,0.4);
+  }
+  .dropzone:hover, .dropzone.drag {
+    border-color: var(--mint);
+    background: rgba(168,212,182,0.04);
+  }
+  .dropzone .ico {
+    font-size: 32px;
+    color: var(--sage);
+    margin-bottom: 8px;
+  }
+  .dropzone .hint {
+    font-family: 'Inter', sans-serif;
+    color: var(--bone-dim);
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+  .dropzone .sub-hint {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    color: var(--sage);
+    text-transform: uppercase;
+  }
+  #file-input { display: none; }
+  .file-list {
+    margin-top: 14px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .file-row {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 14px;
+    background: var(--forest);
+    border: 1px solid rgba(168,212,182,0.1);
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+  }
+  .file-row .fname { color: var(--bone); }
+  .file-row .fsize { color: var(--bone-dim); font-size: 11px; }
+  .file-row.ok { border-color: rgba(168,212,182,0.4); }
+  .file-row.err { border-color: rgba(177,84,84,0.5); }
+  .file-row .status {
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .file-row.ok .status { color: var(--mint); }
+  .file-row.err .status { color: var(--crimson); }
+  .actions {
+    display: flex; gap: 12px;
+    margin-top: 20px;
+  }
+  button {
+    flex: 1;
+    padding: 12px 20px;
+    background: var(--moss);
+    color: var(--bone);
+    border: none;
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  button:hover:not(:disabled) { background: var(--mint); color: var(--forest); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.ghost {
+    background: transparent;
+    border: 1px solid rgba(168,212,182,0.2);
+    color: var(--bone-dim);
+  }
+  button.ghost:hover:not(:disabled) {
+    background: rgba(168,212,182,0.04);
+    color: var(--bone);
+  }
+  .status-line {
+    margin-top: 18px;
+    padding: 14px 16px;
+    background: var(--forest);
+    border-left: 3px solid var(--mint);
+    border-radius: 2px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: var(--bone-dim);
+    display: none;
+  }
+  .status-line.show { display: block; }
+  .status-line.err { border-left-color: var(--crimson); color: var(--crimson); }
+  .progress-bar {
+    margin-top: 10px;
+    height: 4px;
+    background: rgba(168,212,182,0.08);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-bar .fill {
+    height: 100%;
+    background: var(--mint);
+    width: 0%;
+    transition: width 0.3s ease;
+  }
+  .summary {
+    display: flex; gap: 24px;
+    margin-top: 14px;
+    padding: 14px 16px;
+    background: var(--forest);
+    border-radius: 4px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    display: none;
+  }
+  .summary.show { display: flex; }
+  .summary .stat .n {
+    font-family: 'Fraunces', serif;
+    font-size: 22px; color: var(--bone);
+  }
+  .summary .stat .l {
+    font-size: 9px; letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--sage);
+    margin-top: 2px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topbar">
+    <h1>Bird<em>NET</em> · Upload</h1>
+    <a href="/">← Dashboard</a>
+  </div>
+
+  <h2>Upload BirdNET CSV</h2>
+  <div class="sub">Combined Table format · multi-file supported</div>
+
+  <div class="panel">
+    <label for="api-key">API Key</label>
+    <input type="password" id="api-key" placeholder="X-API-Key header value" autocomplete="off">
+
+    <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose CSV files">
+      <div class="ico">↑</div>
+      <div class="hint">Drop CSV files here or click to browse</div>
+      <div class="sub-hint">Filenames like run_YYYYMMDD_HHMMSS_*.csv preserve real timestamps</div>
+    </div>
+    <input type="file" id="file-input" accept=".csv,text/csv" multiple>
+
+    <div class="file-list" id="file-list"></div>
+
+    <div class="actions">
+      <button class="ghost" id="clear-btn" disabled>Clear</button>
+      <button id="upload-btn" disabled>Upload</button>
+    </div>
+
+    <div class="status-line" id="status"></div>
+    <div class="progress-bar" id="progress" style="display:none;"><div class="fill" id="progress-fill"></div></div>
+
+    <div class="summary" id="summary">
+      <div class="stat"><div class="n" id="stat-inserted">0</div><div class="l">Inserted</div></div>
+      <div class="stat"><div class="n" id="stat-duplicates">0</div><div class="l">Duplicates</div></div>
+      <div class="stat"><div class="n" id="stat-files">0</div><div class="l">Files</div></div>
+      <div class="stat"><div class="n" id="stat-images">—</div><div class="l">Images</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const KEY_STORAGE = 'birdnet_api_key';
+  const apiKeyInput = document.getElementById('api-key');
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('file-input');
+  const fileList = document.getElementById('file-list');
+  const uploadBtn = document.getElementById('upload-btn');
+  const clearBtn = document.getElementById('clear-btn');
+  const statusEl = document.getElementById('status');
+  const progressEl = document.getElementById('progress');
+  const progressFill = document.getElementById('progress-fill');
+  const summary = document.getElementById('summary');
+
+  let queued = [];
+
+  apiKeyInput.value = localStorage.getItem(KEY_STORAGE) || '';
+  apiKeyInput.addEventListener('input', () => {
+    localStorage.setItem(KEY_STORAGE, apiKeyInput.value);
+  });
+
+  function fmtSize(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+    return (b/1024/1024).toFixed(2) + ' MB';
+  }
+
+  function renderQueue() {
+    fileList.innerHTML = queued.map((q, i) => `
+      <div class="file-row ${q.status || ''}" data-idx="${i}">
+        <div>
+          <span class="fname">${q.file.name}</span>
+          <span class="fsize"> · ${fmtSize(q.file.size)}</span>
+        </div>
+        <div class="status">${q.message || 'Ready'}</div>
+      </div>
+    `).join('');
+    uploadBtn.disabled = !queued.length || queued.every(q => q.status === 'ok');
+    clearBtn.disabled = !queued.length;
+  }
+
+  function addFiles(files) {
+    for (const f of files) {
+      if (!/\.csv$/i.test(f.name)) continue;
+      queued.push({ file: f, status: '', message: '' });
+    }
+    renderQueue();
+  }
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
+  });
+  fileInput.addEventListener('change', e => addFiles(e.target.files));
+  ['dragenter','dragover'].forEach(ev => dropzone.addEventListener(ev, e => {
+    e.preventDefault(); dropzone.classList.add('drag');
+  }));
+  ['dragleave','drop'].forEach(ev => dropzone.addEventListener(ev, e => {
+    e.preventDefault(); dropzone.classList.remove('drag');
+  }));
+  dropzone.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+
+  clearBtn.addEventListener('click', () => {
+    queued = [];
+    fileInput.value = '';
+    statusEl.classList.remove('show', 'err');
+    progressEl.style.display = 'none';
+    summary.classList.remove('show');
+    renderQueue();
+  });
+
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg;
+    statusEl.classList.add('show');
+    statusEl.classList.toggle('err', !!isErr);
+  }
+
+  async function uploadOne(item) {
+    const fd = new FormData();
+    fd.append('file', item.file);
+    const res = await fetch('/api/upload', {
+      method: 'POST',
+      headers: { 'X-API-Key': apiKeyInput.value },
+      body: fd,
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(json.error || ('HTTP ' + res.status));
+      err.status = res.status;
+      throw err;
+    }
+    return json;
+  }
+
+  async function warmImages() {
+    let species = [];
+    try {
+      const [stats, live] = await Promise.all([
+        fetch('/api/stats').then(r => r.json()),
+        fetch('/api/live').then(r => r.json()),
+      ]);
+      const seen = new Set();
+      for (const s of (stats.top_species || [])) {
+        if (!seen.has(s.species)) { seen.add(s.species); species.push(s); }
+      }
+      for (const d of (live || [])) {
+        if (!seen.has(d.species)) {
+          seen.add(d.species);
+          species.push({ species: d.species, scientific_name: d.scientific_name });
+        }
+      }
+    } catch (e) { return { generated: 0, total: 0 }; }
+
+    const total = species.length;
+    let done = 0;
+    document.getElementById('stat-images').textContent = '0/' + total;
+    for (const s of species) {
+      try {
+        const url = '/api/bird-image?format=json&species=' + encodeURIComponent(s.species)
+          + (s.scientific_name ? '&scientific=' + encodeURIComponent(s.scientific_name) : '');
+        await fetch(url);
+      } catch (e) { /* keep going */ }
+      done++;
+      document.getElementById('stat-images').textContent = done + '/' + total;
+      progressFill.style.width = Math.round(done / total * 100) + '%';
+      setStatus('Rendering bird images... ' + done + ' of ' + total);
+    }
+    return { generated: done, total };
+  }
+
+  uploadBtn.addEventListener('click', async () => {
+    if (!apiKeyInput.value) { setStatus('Enter your API key first.', true); return; }
+    if (!queued.length) return;
+
+    uploadBtn.disabled = true;
+    clearBtn.disabled = true;
+    summary.classList.remove('show');
+    progressEl.style.display = 'block';
+    progressFill.style.width = '0%';
+    setStatus('Uploading...');
+
+    let totalInserted = 0, totalDups = 0, okFiles = 0;
+    for (let i = 0; i < queued.length; i++) {
+      const q = queued[i];
+      if (q.status === 'ok') { okFiles++; continue; }
+      q.status = ''; q.message = 'Uploading...';
+      renderQueue();
+      try {
+        const res = await uploadOne(q);
+        q.status = 'ok';
+        q.message = `${res.inserted} new · ${res.duplicates} dup`;
+        totalInserted += res.inserted;
+        totalDups += res.duplicates;
+        okFiles++;
+      } catch (e) {
+        q.status = 'err';
+        q.message = e.message || 'Failed';
+        if (e.status === 401) {
+          setStatus('Unauthorized — check your API key.', true);
+          renderQueue();
+          uploadBtn.disabled = false;
+          clearBtn.disabled = false;
+          progressEl.style.display = 'none';
+          return;
+        }
+      }
+      progressFill.style.width = Math.round((i + 1) / queued.length * 50) + '%';
+      renderQueue();
+    }
+
+    document.getElementById('stat-inserted').textContent = totalInserted.toLocaleString();
+    document.getElementById('stat-duplicates').textContent = totalDups.toLocaleString();
+    document.getElementById('stat-files').textContent = okFiles;
+    summary.classList.add('show');
+
+    if (totalInserted > 0) {
+      setStatus('Upload complete. Rendering bird images...');
+      await warmImages();
+      setStatus('Done. Redirecting to dashboard...');
+      setTimeout(() => { window.location.href = '/'; }, 1500);
+    } else {
+      setStatus('No new rows inserted. Files may be duplicates or empty.');
+      progressEl.style.display = 'none';
+      uploadBtn.disabled = false;
+      clearBtn.disabled = false;
+    }
+  });
+</script>
+</body>
+</html>
+"""
+
+
 DASHBOARD_HTML = r"""
 <!DOCTYPE html>
 <html lang="en">
@@ -576,7 +1048,20 @@ DASHBOARD_HTML = r"""
     color: var(--sage);
     margin-top: 2px;
   }
-  .topbar-meta { display: flex; align-items: center; gap: 28px; }
+  .topbar-meta { display: flex; align-items: center; gap: 20px; }
+  .upload-link {
+    color: var(--bone-dim);
+    text-decoration: none;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    padding: 7px 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+  .upload-link:hover { color: var(--bone); border-color: var(--mint); background: rgba(168,212,182,0.04); }
   .live-pill {
     display: flex; align-items: center; gap: 8px;
     padding: 7px 14px;
@@ -1144,6 +1629,7 @@ DASHBOARD_HTML = r"""
   </div>
   <div class="topbar-meta">
     <span class="clock" id="clock">—</span>
+    <a href="/upload" class="upload-link">Upload CSV</a>
     <span class="live-pill"><span class="dot"></span><span>Live · 30s</span></span>
   </div>
 </header>
