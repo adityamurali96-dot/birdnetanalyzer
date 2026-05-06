@@ -140,17 +140,53 @@ def add_detection():
     return jsonify({"status": "ok", "inserted": count}), 201
 
 
-_RUN_TS_RE = re.compile(r"run_(\d{8})_(\d{6})")
+_TS_PATTERNS = [
+    # YYYY-MM-DD[_T- ]HH[:_-]MM[:_-]SS  (separators: -, _, /, : flexible)
+    re.compile(r"(\d{4})[-_/](\d{1,2})[-_/](\d{1,2})[T_ \-](\d{1,2})[:\-_](\d{2})[:\-_](\d{2})"),
+    # YYYYMMDD[_T- ]HHMMSS (e.g. run_20260501_120000, 20260501T120000)
+    re.compile(r"(\d{4})(\d{2})(\d{2})[T_ \-](\d{2})(\d{2})(\d{2})"),
+    # YYYY-MM-DD (date only)
+    re.compile(r"(\d{4})[-_/](\d{1,2})[-_/](\d{1,2})"),
+    # YYYYMMDD (date only, guarded against longer numeric runs)
+    re.compile(r"(?<!\d)(\d{4})(\d{2})(\d{2})(?!\d)"),
+]
 
 
 def _parse_run_timestamp(path):
+    """Best-effort: extract a datetime from a filename or audio path.
+    Recognizes ISO-ish (2026-05-06T12:30:00), compact (20260506_123000),
+    date-only forms, and BirdNET-Analyzer's run_YYYYMMDD_HHMMSS layout."""
     if not path:
         return None
-    m = _RUN_TS_RE.search(path)
-    if not m:
+    for pat in _TS_PATTERNS:
+        m = pat.search(path)
+        if not m:
+            continue
+        groups = m.groups()
+        try:
+            ints = [int(g) for g in groups]
+            if len(ints) == 6:
+                y, mo, d, h, mi, s = ints
+                return datetime(y, mo, d, h, mi, s)
+            if len(ints) == 3:
+                y, mo, d = ints
+                return datetime(y, mo, d)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_recorded_at(value):
+    """Parse 'YYYY-MM-DD' or full ISO datetime from a form field."""
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
         return None
     try:
-        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+        if "T" in value or " " in value:
+            return datetime.fromisoformat(value.replace(" ", "T").replace("Z", ""))
+        return datetime.fromisoformat(value + "T00:00:00")
     except ValueError:
         return None
 
@@ -170,10 +206,19 @@ def upload_csv():
     except UnicodeDecodeError:
         return jsonify({"error": "File is not UTF-8 text"}), 400
 
-    candidate_paths = [f.filename or "", request.form.get("source_path", "")]
-    base_dt = next((dt for dt in (_parse_run_timestamp(p) for p in candidate_paths) if dt), None)
+    # Resolve base recording timestamp. Priority:
+    #   1. recorded_at form field (explicit override from upload page / Pi)
+    #   2. timestamp parsed from CSV filename or source_path form field
+    #   3. timestamp parsed from a 'Begin Path'/'Begin File'/'File' column inside the CSV
+    #   4. fallback to utcnow (returned with a warning so the UI can flag it)
+    recorded_at = _parse_recorded_at(request.form.get("recorded_at", ""))
+    base_dt = recorded_at
+    base_source = "recorded_at" if recorded_at else None
     if base_dt is None:
-        base_dt = datetime.utcnow()
+        candidate_paths = [f.filename or "", request.form.get("source_path", "")]
+        base_dt = next((dt for dt in (_parse_run_timestamp(p) for p in candidate_paths) if dt), None)
+        if base_dt is not None:
+            base_source = "filename"
 
     try:
         try:
@@ -196,6 +241,7 @@ def upload_csv():
     col_sci = header_map["scientific name"]
     col_com = header_map["common name"]
     col_conf = header_map["confidence"]
+    col_path = next((header_map[k] for k in ("begin path", "begin file", "file", "audio file") if k in header_map), None)
 
     rows = []
     try:
@@ -212,15 +258,40 @@ def upload_csv():
             com = (row.get(col_com) or "").strip() or sci
             if not com:
                 continue
-            ts = (base_dt + timedelta(seconds=start)).isoformat()
-            rows.append((com, sci, conf, ts, start, end, f.filename))
+            if base_dt is None and col_path:
+                row_path = (row.get(col_path) or "").strip()
+                parsed = _parse_run_timestamp(row_path)
+                if parsed:
+                    base_dt = parsed
+                    base_source = "csv_path"
+            rows.append((com, sci, conf, start, end, f.filename))
     except csv.Error as e:
         return jsonify({"error": f"Malformed CSV: {e}"}), 400
 
+    warning = None
+    if base_dt is None:
+        base_dt = datetime.utcnow()
+        base_source = "now"
+        warning = (
+            "Could not determine the recording date from the filename, the 'recorded_at' "
+            "field, or any in-CSV path column. Detections were stamped with the current "
+            "time instead. Re-upload with a date selected to fix this."
+        )
+
+    rows = [
+        (com, sci, conf, (base_dt + timedelta(seconds=start)).isoformat(), start, end, audio)
+        for (com, sci, conf, start, end, audio) in rows
+    ]
+
+    replace = (request.form.get("replace", "").lower() in ("1", "true", "yes", "on"))
     inserted = 0
     duplicates = 0
+    replaced = 0
     conn = get_db()
     try:
+        if replace and f.filename:
+            cur = conn.execute("DELETE FROM detections WHERE audio_file = ?", (f.filename,))
+            replaced = cur.rowcount or 0
         for r in rows:
             try:
                 conn.execute(
@@ -236,7 +307,16 @@ def upload_csv():
     finally:
         conn.close()
     cleanup_old_records()
-    return jsonify({"inserted": inserted, "duplicates": duplicates}), 200
+    response = {
+        "inserted": inserted,
+        "duplicates": duplicates,
+        "replaced": replaced,
+        "base_timestamp": base_dt.isoformat(),
+        "base_source": base_source,
+    }
+    if warning:
+        response["warning"] = warning
+    return jsonify(response), 200
 
 
 # --- API: read endpoints ---
@@ -583,7 +663,7 @@ UPLOAD_HTML = r"""
     color: var(--sage);
     margin-bottom: 8px;
   }
-  input[type=password], input[type=text] {
+  input[type=password], input[type=text], input[type=datetime-local] {
     width: 100%;
     padding: 10px 14px;
     background: var(--forest);
@@ -594,8 +674,51 @@ UPLOAD_HTML = r"""
     font-size: 13px;
     outline: none;
     transition: border-color 0.15s;
+    color-scheme: dark;
   }
   input:focus { border-color: var(--mint); }
+  .opt-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 18px;
+    margin-top: 18px;
+  }
+  @media (max-width: 560px) {
+    .opt-row { grid-template-columns: 1fr; }
+  }
+  .opt-col label .opt-hint {
+    color: var(--bone-dim);
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 10px;
+    font-family: 'Inter', sans-serif;
+    margin-left: 4px;
+  }
+  .hint-line {
+    margin-top: 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: var(--bone-dim);
+    line-height: 1.4;
+  }
+  .check-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    background: var(--forest);
+    border: 1px solid rgba(168,212,182,0.18);
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--bone);
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .check-row input[type=checkbox] {
+    accent-color: var(--mint);
+    width: 16px; height: 16px;
+    margin: 0;
+  }
   .dropzone {
     margin-top: 18px;
     padding: 40px 20px;
@@ -745,10 +868,26 @@ UPLOAD_HTML = r"""
     <label for="api-key">API Key</label>
     <input type="password" id="api-key" placeholder="X-API-Key header value" autocomplete="off">
 
+    <div class="opt-row">
+      <div class="opt-col">
+        <label for="recorded-at">Recording date <span class="opt-hint">(optional override)</span></label>
+        <input type="datetime-local" id="recorded-at" step="1">
+        <div class="hint-line">Leave blank to auto-detect from each filename. Set this if your CSV filenames don't include a date — it'll be applied to every file in this batch.</div>
+      </div>
+      <div class="opt-col">
+        <label for="replace-existing">Re-upload mode</label>
+        <label class="check-row">
+          <input type="checkbox" id="replace-existing">
+          <span>Replace existing rows from the same CSV filename</span>
+        </label>
+        <div class="hint-line">Use this when fixing previously-uploaded data with the wrong date.</div>
+      </div>
+    </div>
+
     <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Choose CSV files">
       <div class="ico">↑</div>
       <div class="hint">Drop CSV files here or click to browse</div>
-      <div class="sub-hint">Filenames like run_YYYYMMDD_HHMMSS_*.csv preserve real timestamps</div>
+      <div class="sub-hint">Filenames like run_YYYYMMDD_HHMMSS_*.csv (or 2026-05-06_*) preserve real timestamps</div>
     </div>
     <input type="file" id="file-input" accept=".csv,text/csv" multiple>
 
@@ -850,6 +989,9 @@ UPLOAD_HTML = r"""
   async function uploadOne(item) {
     const fd = new FormData();
     fd.append('file', item.file);
+    const recAt = document.getElementById('recorded-at').value;
+    if (recAt) fd.append('recorded_at', recAt);
+    if (document.getElementById('replace-existing').checked) fd.append('replace', 'true');
     const res = await fetch('/api/upload', {
       method: 'POST',
       headers: { 'X-API-Key': apiKeyInput.value },
@@ -862,6 +1004,17 @@ UPLOAD_HTML = r"""
       throw err;
     }
     return json;
+  }
+
+  function fmtBaseSource(src, baseTs) {
+    if (!src) return '';
+    const dt = baseTs ? new Date(baseTs) : null;
+    const dateStr = dt ? dt.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    if (src === 'recorded_at') return ' · date: ' + dateStr + ' (you set)';
+    if (src === 'filename')    return ' · date: ' + dateStr + ' (from filename)';
+    if (src === 'csv_path')    return ' · date: ' + dateStr + ' (from CSV path column)';
+    if (src === 'now')         return ' · date: today (no source — set recording date!)';
+    return '';
   }
 
   async function warmImages() {
@@ -911,7 +1064,7 @@ UPLOAD_HTML = r"""
     progressFill.style.width = '0%';
     setStatus('Uploading...');
 
-    let totalInserted = 0, totalDups = 0, okFiles = 0;
+    let totalInserted = 0, totalDups = 0, okFiles = 0, anyFallback = false;
     for (let i = 0; i < queued.length; i++) {
       const q = queued[i];
       if (q.status === 'ok') { okFiles++; continue; }
@@ -920,7 +1073,12 @@ UPLOAD_HTML = r"""
       try {
         const res = await uploadOne(q);
         q.status = 'ok';
-        q.message = `${res.inserted} new · ${res.duplicates} dup`;
+        const repl = res.replaced ? ` · ${res.replaced} replaced` : '';
+        q.message = `${res.inserted} new · ${res.duplicates} dup` + repl + fmtBaseSource(res.base_source, res.base_timestamp);
+        if (res.base_source === 'now') {
+          q.status = 'err';
+          anyFallback = true;
+        }
         totalInserted += res.inserted;
         totalDups += res.duplicates;
         okFiles++;
@@ -944,6 +1102,14 @@ UPLOAD_HTML = r"""
     document.getElementById('stat-duplicates').textContent = totalDups.toLocaleString();
     document.getElementById('stat-files').textContent = okFiles;
     summary.classList.add('show');
+
+    if (anyFallback) {
+      setStatus('Some files were stamped with today\'s date because no recording date could be detected. Set "Recording date" above, tick "Replace existing rows", and re-upload.', true);
+      progressEl.style.display = 'none';
+      uploadBtn.disabled = false;
+      clearBtn.disabled = false;
+      return;
+    }
 
     if (totalInserted > 0) {
       setStatus('Upload complete. Rendering bird images...');
