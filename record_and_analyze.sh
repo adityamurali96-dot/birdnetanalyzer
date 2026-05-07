@@ -38,7 +38,10 @@ if [ -f "$RESULT_FILE" ]; then
         (( $(echo "$confidence < 0.25" | bc -l) )) && continue
 
         SPECIES="${common_name:-$sci_name}"
-        TS=$(date -u +%Y-%m-%dT%H:%M:%S)
+        # Send local time (not UTC) — dashboard treats stored timestamps as
+        # naive local. Using `date -u` here would shift the displayed time
+        # by the Pi's TZ offset.
+        TS=$(date +%Y-%m-%dT%H:%M:%S)
 
         if [ "$FIRST" = true ]; then
             FIRST=false
