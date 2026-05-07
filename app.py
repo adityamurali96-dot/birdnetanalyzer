@@ -103,7 +103,7 @@ def cleanup_old_records():
     if RETENTION_DAYS <= 0:
         return
     conn = get_db()
-    cutoff = (datetime.utcnow() - timedelta(days=RETENTION_DAYS)).isoformat()
+    cutoff = (datetime.now() - timedelta(days=RETENTION_DAYS)).isoformat()
     conn.execute("DELETE FROM detections WHERE timestamp < ?", (cutoff,))
     conn.commit()
     conn.close()
@@ -129,7 +129,7 @@ def add_detection():
             "INSERT INTO detections (species, confidence, timestamp, latitude, longitude, audio_file) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 d["species"], float(d["confidence"]),
-                d.get("timestamp", datetime.utcnow().isoformat()),
+                d.get("timestamp", datetime.now().isoformat()),
                 d.get("latitude"), d.get("longitude"), d.get("audio_file"),
             ),
         )
@@ -210,7 +210,7 @@ def upload_csv():
     #   1. recorded_at form field (explicit override from upload page / Pi)
     #   2. timestamp parsed from CSV filename or source_path form field
     #   3. timestamp parsed from a 'Begin Path'/'Begin File'/'File' column inside the CSV
-    #   4. fallback to utcnow (returned with a warning so the UI can flag it)
+    #   4. fallback to current local time (returned with a warning so the UI can flag it)
     recorded_at = _parse_recorded_at(request.form.get("recorded_at", ""))
     base_dt = recorded_at
     base_source = "recorded_at" if recorded_at else None
@@ -270,7 +270,7 @@ def upload_csv():
 
     warning = None
     if base_dt is None:
-        base_dt = datetime.utcnow()
+        base_dt = datetime.now()
         base_source = "now"
         warning = (
             "Could not determine the recording date from the filename, the 'recorded_at' "
@@ -333,7 +333,7 @@ def get_detections():
         query = "SELECT * FROM detections WHERE DATE(timestamp) = ?"
         params.append(day)
     else:
-        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
         query = "SELECT * FROM detections WHERE timestamp > ?"
         params.append(cutoff)
     if species:
@@ -375,7 +375,7 @@ def get_day_summary():
 @app.route("/api/stats")
 def get_stats():
     conn = get_db()
-    cutoff_7d = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    cutoff_7d = (datetime.now() - timedelta(days=7)).isoformat()
 
     total = conn.execute(
         "SELECT COUNT(*) as c FROM detections WHERE timestamp > ?", (cutoff_7d,)
@@ -432,7 +432,7 @@ def live_feed():
 
 @app.route("/api/health")
 def health():
-    return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+    return jsonify({"status": "ok", "time": datetime.now().isoformat()})
 
 
 # --- Bird image generation (OpenAI gpt-image-1) ---
@@ -2023,8 +2023,9 @@ DASHBOARD_HTML = r"""
   };
   const PALETTE = ['#a8d4b6','#7fa68a','#3d6b4a','#d8a64a','#b8623a','#5a8a6e','#bcd4a0','#244a35'];
 
+  // Stored timestamps are naive local ISO; do NOT append 'Z' (would double-shift by TZ offset).
   function timeAgo(ts) {
-    const d = new Date(ts.endsWith('Z') ? ts : ts+'Z');
+    const d = new Date(ts);
     const diff = (Date.now() - d.getTime()) / 1000;
     if (diff < 60) return Math.floor(diff) + 's ago';
     if (diff < 3600) return Math.floor(diff/60) + 'm ago';
@@ -2033,7 +2034,7 @@ DASHBOARD_HTML = r"""
   }
 
   function fmtTime(ts) {
-    const d = new Date(ts.endsWith('Z') ? ts : ts+'Z');
+    const d = new Date(ts);
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
